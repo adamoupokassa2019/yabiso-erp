@@ -100,7 +100,7 @@ app.post('/api/auth/login', async (req, res) => {
             return res.status(400).json({ error: 'Email ou mot de passe incorrect.' });
         }
 
-        const user = result.rows.length > 0 ? result.rows[0] : null;
+        const user = result.rows[0];
         const validPassword = await bcrypt.compare(password, user.password);
         if (!validPassword) {
             return res.status(400).json({ error: 'Email ou mot de passe incorrect.' });
