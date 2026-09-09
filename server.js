@@ -78,84 +78,116 @@ app.get('/', (req, res) => {
 
 // --- MODULE AUTHENTIFICATION ---
 
-// 1. Inscription d'un utilisateur
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { nom, email, password, role } = req.body;
-    
     if (!nom || !email || !password) {
       return res.status(400).json({ error: 'Veuillez remplir tous les champs obligatoires.' });
     }
-
-    // Vérifier si l'utilisateur existe déjà
     const userExist = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
     if (userExist.rows.length > 0) {
       return res.status(400).json({ error: 'Cet email est déjà utilisé.' });
     }
-
-    // Hacher le mot de passe
     const salt = await bcrypt.genSalt(10);
     const password_hash = await bcrypt.hash(password, salt);
-
-    // Insérer l'utilisateur dans la base de données
     const newUser = await pool.query(
       'INSERT INTO users (nom, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id, nom, email, role, created_at',
       [nom, email, password_hash, role || 'employe']
     );
-
-    res.status(201).json({
-      message: 'Utilisateur créé avec succès !',
-      user: newUser.rows[0]
-    });
+    res.status(201).json({ message: 'Utilisateur créé avec succès !', user: newUser.rows[0] });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erreur serveur lors de l’inscription.' });
   }
 });
 
-// 2. Connexion d'un utilisateur
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-
     if (!email || !password) {
       return res.status(400).json({ error: 'Veuillez fournir un email et un mot de passe.' });
     }
-
-    // Rechercher l'utilisateur par email
     const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     if (result.rows.length === 0) {
       return res.status(400).json({ error: 'Email ou mot de passe incorrect.' });
     }
-
     const user = result.rows[0];
-
-    // Vérifier le mot de passe
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       return res.status(400).json({ error: 'Email ou mot de passe incorrect.' });
     }
-
-    // Créer un token JWT valable 24h
-    const token = jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
-      JWT_SECRET,
-      { expiresIn: '24h' }
-    );
-
-    res.json({
-      message: 'Connexion réussie !',
-      token,
-      user: {
-        id: user.id,
-        nom: user.nom,
-        email: user.email,
-        role: user.role
-      }
-    });
+    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
+    res.json({ message: 'Connexion réussie !', token, user: { id: user.id, nom: user.nom, email: user.email, role: user.role } });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erreur serveur lors de la connexion.' });
+  }
+});
+
+// --- MODULE STOCK (Catégories & Produits) ---
+
+// 1. Ajouter une catégorie
+app.post('/api/categories', async (req, res) => {
+  try {
+    const { nom, description } = req.body;
+    if (!nom) {
+      return res.status(400).json({ error: 'Le nom de la catégorie est obligatoire.' });
+    }
+    const newCategory = await pool.query(
+      'INSERT INTO categories (nom, description) VALUES ($1, $2) RETURNING *',
+      [nom, description]
+    );
+    res.status(201).json({ message: 'Catégorie créée avec succès !', category: newCategory.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erreur serveur lors de la création de la catégorie.' });
+  }
+});
+
+// 2. Lister toutes les catégories
+app.get('/api/categories', async (req, res) => {
+  try {
+    const categories = await pool.query('SELECT * FROM categories ORDER BY nom ASC');
+    res.json(categories.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erreur lors de la récupération des catégories.' });
+  }
+});
+
+// 3. Ajouter un produit au stock
+app.post('/api/produits', async (req, res) => {
+  try {
+    const { code_barre, nom, description, prix_achat, prix_vente, quantite_stock, quantite_alerte, category_id } = req.body;
+    if (!nom || prix_vente === undefined) {
+      return res.status(400).json({ error: 'Le nom et le prix de vente sont obligatoires.' });
+    }
+    const newProduit = await pool.query(
+      `INSERT INTO produits (code_barre, nom, description, prix_achat, prix_vente, quantite_stock, quantite_alerte, category_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [code_barre, nom, description, prix_achat || 0, prix_vente, quantite_stock || 0, quantite_alerte || 5, category_id]
+    );
+    res.status(201).json({ message: 'Produit ajouté au stock avec succès !', produit: newProduit.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erreur serveur lors de l’ajout du produit.' });
+  }
+});
+
+// 4. Lister tous les produits avec leur catégorie
+app.get('/api/produits', async (req, res) => {
+  try {
+    const query = `
+      SELECT p.*, c.nom AS category_nom 
+      FROM produits p 
+      LEFT JOIN categories c ON p.category_id = c.id 
+      ORDER BY p.nom ASC
+    `;
+    const produits = await pool.query(query);
+    res.json(produits.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erreur lors de la récupération des produits.' });
   }
 });
 
