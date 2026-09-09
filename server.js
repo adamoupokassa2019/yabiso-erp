@@ -7,7 +7,9 @@ const app = express();
 const port = process.env.PORT || 10000;
 const JWT_SECRET = process.env.JWT_SECRET || 'votre_secret_jwt_par_defaut';
 
+// Middleware JSON et fichiers statiques (Front-end dans le dossier 'public')
 app.use(express.json());
+app.use(express.static('public'));
 
 // Connexion à la base de données PostgreSQL Render
 const pool = new Pool({
@@ -70,11 +72,6 @@ const initDbQuery = `
 pool.query(initDbQuery)
   .then(() => console.log('Base de données initialisée avec succès !'))
   .catch((err) => console.error('Erreur lors de l’initialisation de la BDD :', err));
-
-// Route de test principale
-app.get('/', (req, res) => {
-  res.send('Serveur YA BISSO ERP opérationnel et BDD connectée !');
-});
 
 // --- MODULE AUTHENTIFICATION ---
 
@@ -189,20 +186,17 @@ app.get('/api/produits', async (req, res) => {
 
 // --- MODULE VENTES ---
 
-// 1. Enregistrer une vente (avec transaction sécurisée et mise à jour du stock)
 app.post('/api/ventes', async (req, res) => {
   const client = await pool.connect();
   try {
     const { user_id, mode_paiement, items } = req.body; 
-    // items est un tableau de type : [{ produit_id: 1, quantite: 2, prix_unitaire: 1500 }, ...]
 
     if (!items || items.length === 0) {
       return res.status(400).json({ error: 'Le panier est vide.' });
     }
 
-    await client.query('BEGIN'); // Début de la transaction SQL
+    await client.query('BEGIN');
 
-    // Calculer le montant total et vérifier le stock
     let total_montant = 0;
     for (let item of items) {
       const produitCheck = await client.query('SELECT quantite_stock, prix_vente FROM produits WHERE id = $1', [item.produit_id]);
@@ -216,7 +210,6 @@ app.post('/api/ventes', async (req, res) => {
       total_montant += (item.prix_unitaire || produit.prix_vente) * item.quantite;
     }
 
-    // Insérer l'en-tête de la vente
     const venteQuery = `
       INSERT INTO ventes (user_id, total_montant, mode_paiement, statut) 
       VALUES ($1, $2, $3, 'complete') RETURNING *
@@ -224,7 +217,6 @@ app.post('/api/ventes', async (req, res) => {
     const venteResult = await client.query(venteQuery, [user_id || null, total_montant, mode_paiement || 'espece']);
     const nouvelleVente = venteResult.rows[0];
 
-    // Insérer les lignes de vente et décrémenter le stock
     for (let item of items) {
       const prixU = item.prix_unitaire || 0;
       const sousTotal = prixU * item.quantite;
@@ -235,14 +227,13 @@ app.post('/api/ventes', async (req, res) => {
         [nouvelleVente.id, item.produit_id, item.quantite, prixU, sousTotal]
       );
 
-      // Mettre à jour le stock du produit
       await client.query(
         `UPDATE produits SET quantite_stock = quantite_stock - $1 WHERE id = $2`,
         [item.quantite, item.produit_id]
       );
     }
 
-    await client.query('COMMIT'); // Valider la transaction
+    await client.query('COMMIT');
 
     res.status(201).json({
       message: 'Vente enregistrée avec succès et stock mis à jour !',
@@ -250,7 +241,7 @@ app.post('/api/ventes', async (req, res) => {
     });
 
   } catch (err) {
-    await client.query('ROLLBACK'); // Annuler en cas d'erreur
+    await client.query('ROLLBACK');
     console.error(err);
     res.status(400).json({ error: err.message || 'Erreur lors de l’enregistrement de la vente.' });
   } finally {
@@ -258,7 +249,6 @@ app.post('/api/ventes', async (req, res) => {
   }
 });
 
-// 2. Historique des ventes
 app.get('/api/ventes', async (req, res) => {
   try {
     const query = `
