@@ -2,284 +2,255 @@ const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const path = require('path');
 
 const app = express();
-const port = process.env.PORT || 10000;
-const JWT_SECRET = process.env.JWT_SECRET || 'votre_secret_jwt_par_defaut';
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'yabisso_secret_key_2026';
 
-// Middleware JSON et fichiers statiques (Front-end dans le dossier 'public')
-app.use(express.json());
-app.use(express.static('public'));
-
-// Connexion à la base de données PostgreSQL Render
+// Configuration de la base de données PostgreSQL
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false
-  }
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Script d'initialisation des tables SQL
-const initDbQuery = `
-  CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      nom VARCHAR(100) NOT NULL,
-      email VARCHAR(150) UNIQUE NOT NULL,
-      password_hash VARCHAR(255) NOT NULL,
-      role VARCHAR(50) DEFAULT 'employe',
-      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-  );
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
-  CREATE TABLE IF NOT EXISTS categories (
-      id SERIAL PRIMARY KEY,
-      nom VARCHAR(100) NOT NULL,
-      description TEXT
-  );
+// Initialisation et réinitialisation propre des tables et des comptes par défaut
+async function initDB() {
+    try {
+        // Suppression des anciennes tables pour repartir sur du propre
+        await pool.query(`DROP TABLE IF EXISTS details_vente CASCADE;`);
+        await pool.query(`DROP TABLE IF EXISTS ventes CASCADE;`);
+        await pool.query(`DROP TABLE IF EXISTS produits CASCADE;`);
+        await pool.query(`DROP TABLE IF EXISTS utilisateurs CASCADE;`);
 
-  CREATE TABLE IF NOT EXISTS produits (
-      id SERIAL PRIMARY KEY,
-      code_barre VARCHAR(100) UNIQUE,
-      nom VARCHAR(150) NOT NULL,
-      description TEXT,
-      prix_achat DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
-      prix_vente DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
-      quantite_stock INT NOT NULL DEFAULT 0,
-      quantite_alerte INT DEFAULT 5,
-      category_id INT REFERENCES categories(id) ON DELETE SET NULL,
-      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-  );
+        // Création des tables
+        await pool.query(`
+            CREATE TABLE utilisateurs (
+                id SERIAL PRIMARY KEY,
+                nom VARCHAR(100) NOT NULL,
+                email VARCHAR(100) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL,
+                role VARCHAR(50) NOT NULL,
+                changer_mdp BOOLEAN DEFAULT TRUE
+            );
 
-  CREATE TABLE IF NOT EXISTS ventes (
-      id SERIAL PRIMARY KEY,
-      user_id INT REFERENCES users(id) ON DELETE SET NULL,
-      total_montant DECIMAL(10, 2) NOT NULL,
-      mode_paiement VARCHAR(50) DEFAULT 'espece',
-      statut VARCHAR(50) DEFAULT 'complete',
-      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-  );
+            CREATE TABLE produits (
+                id SERIAL PRIMARY KEY,
+                nom VARCHAR(100) NOT NULL,
+                prix_vente NUMERIC(10, 2) NOT NULL,
+                quantite_stock INT NOT NULL,
+                quantite_alerte INT DEFAULT 5
+            );
 
-  CREATE TABLE IF NOT EXISTS vente_details (
-      id SERIAL PRIMARY KEY,
-      vente_id INT REFERENCES ventes(id) ON DELETE CASCADE,
-      produit_id INT REFERENCES produits(id) ON DELETE RESTRICT,
-      quantite INT NOT NULL,
-      prix_unitaire DECIMAL(10, 2) NOT NULL,
-      sous_total DECIMAL(10, 2) NOT NULL
-  );
-`;
+            CREATE TABLE ventes (
+                id SERIAL PRIMARY KEY,
+                user_id INT REFERENCES utilisateurs(id),
+                mode_paiement VARCHAR(50) NOT NULL,
+                montant_total NUMERIC(10, 2) NOT NULL,
+                date_vente TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
 
-// Initialisation au démarrage de la BDD et création automatique d'un compte admin par défaut si inexistant
-pool.query(initDbQuery)
-  .then(async () => {
-    console.log('Base de données initialisée avec succès !');
-    
-    // Vérifier si un admin existe déjà, sinon en créer un par défaut
-    const adminCheck = await pool.query('SELECT id FROM users WHERE email = $1', ['admin@yabisoo.com']);
-    if (adminCheck.rows.length === 0) {
-      const salt = await bcrypt.genSalt(10);
-      const hash = await bcrypt.hash('admin123', salt);
-      await pool.query(
-        'INSERT INTO users (nom, email, password_hash, role) VALUES ($1, $2, $3, $4)',
-        ['Adamou (Admin)', 'admin@yabisoo.com', hash, 'admin']
-      );
-      console.log('Compte administrateur par défaut créé : admin@yabisoo.com / admin123');
+            CREATE TABLE details_vente (
+                id SERIAL PRIMARY KEY,
+                vente_id INT REFERENCES ventes(id) ON DELETE CASCADE,
+                produit_id INT REFERENCES produits(id),
+                quantite INT NOT NULL,
+                prix_unitaire NUMERIC(10, 2) NOT NULL
+            );
+        `);
+
+        // Insertion des 3 comptes demandés (avec mot de passe temporaire "Passer123" et changer_mdp = TRUE)
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash('Passer123', salt);
+
+        await pool.query(
+            `INSERT INTO utilisateurs (nom, email, password, role, changer_mdp) VALUES 
+            ('Direction Ya Bisso', 'direction@yabisso.com', $1, 'admin', TRUE),
+            ('Chef d Agence', 'agence@yabisso.com', $1, 'admin', TRUE),
+            ('Secretariat Caisse', 'secretariat@yabisso.com', $1, 'caissier', TRUE)`,
+            [hashedPassword]
+        );
+
+        // Insertion de quelques produits par défaut pour tester la caisse
+        await pool.query(`
+            INSERT INTO produits (nom, prix_vente, quantite_stock, quantite_alerte) VALUES 
+            ('Affiche Publicitaire A3', 1500, 50, 5),
+            ('Badges Professionnels', 500, 120, 10),
+            ('Flyers Recto-Verso (Lot 100)', 5000, 30, 3),
+            ('Cachet Encre Automatique', 7500, 15, 2);
+        `);
+
+        console.log("Base de données réinitialisée avec succès. Comptes par défaut créés.");
+    } catch (err) {
+        console.error("Erreur lors de l'initialisation de la base de données :", err);
     }
-  })
-  .catch((err) => console.error('Erreur lors de l’initialisation de la BDD :', err));
+}
 
-// --- MODULE AUTHENTIFICATION ---
+initDB();
 
-app.post('/api/auth/register', async (req, res) => {
-  try {
-    const { nom, email, password, role } = req.body;
-    if (!nom || !email || !password) {
-      return res.status(400).json({ error: 'Veuillez remplir tous les champs obligatoires.' });
-    }
-    const userExist = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
-    if (userExist.rows.length > 0) {
-      return res.status(400).json({ error: 'Cet email est déjà utilisé.' });
-    }
-    const salt = await bcrypt.genSalt(10);
-    const password_hash = await bcrypt.hash(password, salt);
-    const newUser = await pool.query(
-      'INSERT INTO users (nom, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id, nom, email, role, created_at',
-      [nom, email, password_hash, role || 'employe']
-    );
-    res.status(201).json({ message: 'Utilisateur créé avec succès !', user: newUser.rows[0] });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Erreur serveur lors de l’inscription.' });
-  }
-});
-
+// API Login
 app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Veuillez fournir un email et un mot de passe.' });
+    try {
+        const { email, password } = req.body;
+        const result = await pool.query('SELECT * FROM utilisateurs WHERE email = $1', [email]);
+        if (result.rows.length === 0) {
+            return res.status(400).json({ error: 'Email ou mot de passe incorrect.' });
+        }
+
+        const user = result.rows.length > 0 ? result.rows[0] : null;
+        const validPassword = await bcrypt.compare(password, user.password);
+        if (!validPassword) {
+            return res.status(400).json({ error: 'Email ou mot de passe incorrect.' });
+        }
+
+        const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '12h' });
+        res.json({
+            token,
+            user: {
+                id: user.id,
+                nom: user.nom,
+                email: user.email,
+                role: user.role,
+                changer_mdp: user.changer_mdp
+            }
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-    if (result.rows.length === 0) {
-      return res.status(400).json({ error: 'Email ou mot de passe incorrect.' });
-    }
-    const user = result.rows[0];
-    const isMatch = await bcrypt.compare(password, user.password_hash);
-    if (!isMatch) {
-      return res.status(400).json({ error: 'Email ou mot de passe incorrect.' });
-    }
-    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
-    res.json({ message: 'Connexion réussie !', token, user: { id: user.id, nom: user.nom, email: user.email, role: user.role } });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Erreur serveur lors de la connexion.' });
-  }
 });
 
-// --- MODULE STOCK (Catégories & Produits) ---
+// API Modification de mot de passe (première connexion)
+app.post('/api/auth/changer-password', async (req, res) => {
+    try {
+        const { email, nouveauPassword } = req.body;
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(nouveauPassword, salt);
 
-app.post('/api/categories', async (req, res) => {
-  try {
-    const { nom, description } = req.body;
-    if (!nom) {
-      return res.status(400).json({ error: 'Le nom de la catégorie est obligatoire.' });
+        await pool.query(
+            'UPDATE utilisateurs SET password = $1, changer_mdp = FALSE WHERE email = $2',
+            [hashedPassword, email]
+        );
+        res.json({ success: true, message: "Mot de passe mis à jour avec succès." });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-    const newCategory = await pool.query(
-      'INSERT INTO categories (nom, description) VALUES ($1, $2) RETURNING *',
-      [nom, description]
-    );
-    res.status(201).json({ message: 'Catégorie créée avec succès !', category: newCategory.rows[0] });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Erreur serveur lors de la création de la catégorie.' });
-  }
 });
 
-app.get('/api/categories', async (req, res) => {
-  try {
-    const categories = await pool.query('SELECT * FROM categories ORDER BY nom ASC');
-    res.json(categories.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Erreur lors de la récupération des catégories.' });
-  }
-});
+// Middleware d'authentification
+function verifyToken(req, res, next) {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'Accès non autorisé.' });
 
-app.post('/api/produits', async (req, res) => {
-  try {
-    const { code_barre, nom, description, prix_achat, prix_vente, quantite_stock, quantite_alerte, category_id } = req.body;
-    if (!nom || prix_vente === undefined) {
-      return res.status(400).json({ error: 'Le nom et le prix de vente sont obligatoires.' });
-    }
-    const newProduit = await pool.query(
-      `INSERT INTO produits (code_barre, nom, description, prix_achat, prix_vente, quantite_stock, quantite_alerte, category_id) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [code_barre, nom, description, prix_achat || 0, prix_vente, quantite_stock || 0, quantite_alerte || 5, category_id]
-    );
-    res.status(201).json({ message: 'Produit ajouté au stock avec succès !', produit: newProduit.rows[0] });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Erreur serveur lors de l’ajout du produit.' });
-  }
-});
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) return res.status(403).json({ error: 'Token invalide ou expiré.' });
+        req.user = user;
+        next();
+    });
+}
 
+// Routes Produits
 app.get('/api/produits', async (req, res) => {
-  try {
-    const query = `
-      SELECT p.*, c.nom AS category_nom 
-      FROM produits p 
-      LEFT JOIN categories c ON p.category_id = c.id 
-      ORDER BY p.nom ASC
-    `;
-    const produits = await pool.query(query);
-    res.json(produits.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Erreur lors de la récupération des produits.' });
-  }
+    try {
+        const result = await pool.query('SELECT * FROM produits ORDER BY id ASC');
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// --- MODULE VENTES ---
+// Routes Ventes
+app.get('/api/ventes', async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT v.id, v.date_vente, v.mode_paiement, v.montant_total, u.nom AS caissier 
+            FROM ventes v 
+            LEFT JOIN utilisateurs u ON v.user_id = u.id 
+            ORDER BY v.id DESC
+        `);
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 app.post('/api/ventes', async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const { user_id, mode_paiement, items } = req.body; 
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const { user_id, mode_paiement, items } = req.body;
 
-    if (!items || items.length === 0) {
-      return res.status(400).json({ error: 'Le panier est vide.' });
+        let montantTotal = 0;
+        for (let item of items) {
+            montantTotal += item.prix_unitaire * item.quantite;
+        }
+
+        const venteRes = await client.query(
+            'INSERT INTO ventes (user_id, mode_paiement, montant_total) VALUES ($1, $2, $3) RETURNING id',
+            [user_id || null, mode_paiement, montantTotal]
+        );
+        const venteId = venteRes.rows[0].id;
+
+        for (let item of items) {
+            await client.query(
+                'INSERT INTO details_vente (vente_id, produit_id, quantite, prix_unitaire) VALUES ($1, $2, $3, $4)',
+                [venteId, item.produit_id, item.quantite, item.prix_unitaire]
+            );
+            await client.query(
+                'UPDATE produits SET quantite_stock = quantite_stock - $1 WHERE id = $2',
+                [item.quantite, item.produit_id]
+            );
+        }
+
+        await client.query('COMMIT');
+        res.status(201).json({ success: true, venteId });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        res.status(500).json({ error: err.message });
+    } finally {
+        client.release();
     }
-
-    await client.query('BEGIN');
-
-    let total_montant = 0;
-    for (let item of items) {
-      const produitCheck = await client.query('SELECT quantite_stock, prix_vente FROM produits WHERE id = $1', [item.produit_id]);
-      if (produitCheck.rows.length === 0) {
-        throw new Error(`Produit ID ${item.produit_id} introuvable.`);
-      }
-      const produit = produitCheck.rows[0];
-      if (produit.quantite_stock < item.quantite) {
-        throw new Error(`Stock insuffisant pour le produit ID ${item.produit_id}. Stock disponible : ${produit.quantite_stock}`);
-      }
-      total_montant += (item.prix_unitaire || produit.prix_vente) * item.quantite;
-    }
-
-    const venteQuery = `
-      INSERT INTO ventes (user_id, total_montant, mode_paiement, statut) 
-      VALUES ($1, $2, $3, 'complete') RETURNING *
-    `;
-    const venteResult = await client.query(venteQuery, [user_id || null, total_montant, mode_paiement || 'espece']);
-    const nouvelleVente = venteResult.rows[0];
-
-    for (let item of items) {
-      const prixU = item.prix_unitaire || 0;
-      const sousTotal = prixU * item.quantite;
-
-      await client.query(
-        `INSERT INTO vente_details (vente_id, produit_id, quantite, prix_unitaire, sous_total) 
-         VALUES ($1, $2, $3, $4, $5)`,
-        [nouvelleVente.id, item.produit_id, item.quantite, prixU, sousTotal]
-      );
-
-      await client.query(
-        `UPDATE produits SET quantite_stock = quantite_stock - $1 WHERE id = $2`,
-        [item.quantite, item.produit_id]
-      );
-    }
-
-    await client.query('COMMIT');
-
-    res.status(201).json({
-      message: 'Vente enregistrée avec succès et stock mis à jour !',
-      vente: nouvelleVente
-    });
-
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error(err);
-    res.status(400).json({ error: err.message || 'Erreur lors de l’enregistrement de la vente.' });
-  } finally {
-    client.release();
-  }
 });
 
-app.get('/api/ventes', async (req, res) => {
-  try {
-    const query = `
-      SELECT v.*, u.nom AS vendeur_nom 
-      FROM ventes v 
-      LEFT JOIN users u ON v.user_id = u.id 
-      ORDER BY v.created_at DESC
-    `;
-    const ventes = await pool.query(query);
-    res.json(ventes.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Erreur lors de la récupération de l’historique des ventes.' });
-  }
+// Routes Utilisateurs
+app.get('/api/utilisateurs', verifyToken, async (req, res) => {
+    try {
+        const result = await pool.query('SELECT id, nom, email, role FROM utilisateurs ORDER BY id ASC');
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
-// Démarrage du serveur
-app.listen(port, () => {
-  console.log(`Serveur démarré sur le port ${port}`);
+app.post('/api/utilisateurs', verifyToken, async (req, res) => {
+    try {
+        const { nom, email, password, role } = req.body;
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        const result = await pool.query(
+            'INSERT INTO utilisateurs (nom, email, password, role, changer_mdp) VALUES ($1, $2, $3, $4, TRUE) RETURNING id, nom, email, role',
+            [nom, email, hashedPassword, role]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/utilisateurs/:id', verifyToken, async (req, res) => {
+    try {
+        const { id } = req.params;
+        await pool.query('DELETE FROM utilisateurs WHERE id = $1', [id]);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.listen(PORT, () => {
+    console.log(`Serveur démarré sur le port ${PORT}`);
 });
