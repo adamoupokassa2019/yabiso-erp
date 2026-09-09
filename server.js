@@ -68,9 +68,23 @@ const initDbQuery = `
   );
 `;
 
-// Initialisation au démarrage de la BDD
+// Initialisation au démarrage de la BDD et création automatique d'un compte admin par défaut si inexistant
 pool.query(initDbQuery)
-  .then(() => console.log('Base de données initialisée avec succès !'))
+  .then(async () => {
+    console.log('Base de données initialisée avec succès !');
+    
+    // Vérifier si un admin existe déjà, sinon en créer un par défaut
+    const adminCheck = await pool.query('SELECT id FROM users WHERE email = $1', ['admin@yabisoo.com']);
+    if (adminCheck.rows.length === 0) {
+      const salt = await bcrypt.genSalt(10);
+      const hash = await bcrypt.hash('admin123', salt);
+      await pool.query(
+        'INSERT INTO users (nom, email, password_hash, role) VALUES ($1, $2, $3, $4)',
+        ['Adamou (Admin)', 'admin@yabisoo.com', hash, 'admin']
+      );
+      console.log('Compte administrateur par défaut créé : admin@yabisoo.com / admin123');
+    }
+  })
   .catch((err) => console.error('Erreur lors de l’initialisation de la BDD :', err));
 
 // --- MODULE AUTHENTIFICATION ---
