@@ -89,7 +89,8 @@ async function initDB() {
     }
 }
 
-initDB();
+// ⚠️ COMMENTÉ POUR ÉVITER D'EFFACER TES MODIFICATIONS DE MOT DE PASSE À CHAQUE REDÉMARRAGE :
+// initDB();
 
 // API Login
 app.post('/api/auth/login', async (req, res) => {
